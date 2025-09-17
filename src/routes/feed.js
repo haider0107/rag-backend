@@ -38,7 +38,7 @@ router.post("/add-feed", requireAuth(), async (req, res) => {
 
     let count = 0;
 
-    for (let item of feed.items.slice(0, 50)) {
+    for (let item of feed.items.slice(0, 30)) {
       try {
         const text = await extractArticle(item.link);
 
