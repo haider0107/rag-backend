@@ -1,53 +1,30 @@
 import express from "express";
-import redisClient from "../redisClient.js";
-import { QdrantVectorStore } from "@langchain/qdrant";
-import { JinaEmbeddings } from "@langchain/community/embeddings/jina";
-import { GoogleGenAI } from "@google/genai";
+import { getAuth, requireAuth } from "@clerk/express"; // 👈 Clerk middleware
+import { ai } from "../services/aiService.js";
+import { getSession, saveSession } from "../services/sessionService.js";
+import { vectorStore } from "../services/vectorService.js";
+import { linkifyCitations } from "../services/citationService.js";
+import redisClient from "../redisClient.js"; // 👈 needed for /clear
 
 const router = express.Router();
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-async function getSession(sessionId) {
-  const data = await redisClient.get(sessionId);
-  return data ? JSON.parse(data) : [];
-}
-
-async function saveSession(sessionId, history) {
-  await redisClient.set(sessionId, JSON.stringify(history));
-}
-
-const embeddings = new JinaEmbeddings({
-  apiKey: process.env.JINA_API_KEY,
-  model: "jina-embeddings-v3", // Optional, defaults to "jina-clip-v2"
-});
-
-const vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
-  url: process.env.QDRANT_URL,
-  apikey: process.env.QDRANT_API_KEY,
-  collectionName: "testing",
-});
-
-function linkifyCitations(answer, results) {
-  return answer.replace(/\[Source (\d+)\]/g, (match, num) => {
-    const idx = parseInt(num, 10) - 1;
-    const doc = results[idx];
-    if (doc?.metadata?.url) {
-      return `[Source ${doc.metadata.url}]`;
-    }
-    return match; // fallback if no URL
-  });
-}
-
-router.post("/ask", async (req, res) => {
+// 🔐 Protect this route with Clerk
+router.post("/ask", requireAuth(), async (req, res) => {
   try {
-    const { sessionId, question } = req.body;
-    if (!sessionId) return res.status(400).json({ error: "Missing sessionId" });
+    // Use Clerk's userId as sessionId
+    const { userId } = getAuth(req);
+    const sessionId = userId;
+    const { question } = req.body;
 
-    // 🔹 Load history from Redis
+    if (!sessionId) {
+      return res.status(400).json({ error: "Missing Clerk userId" });
+    }
+
+    // Load history from Redis
     let history = await getSession(sessionId);
 
+    // Retrieve relevant context
     const results = await vectorStore.similaritySearch(question, 5);
-
     const context = results
       .map(
         (r, i) =>
@@ -57,13 +34,13 @@ router.post("/ask", async (req, res) => {
       )
       .join("\n\n");
 
-    // 🔹 Build prompt with limited history
+    // Build conversation prompt
     const historyText = history
       .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
       .join("\n");
 
     const prompt = `
-      You are a helpful assistant. Use the provided sources(provide url if available) to answer.
+      You are a helpful assistant. Use the provided sources (provide url if available) to answer.
 
       Conversation so far:
       ${historyText}
@@ -74,11 +51,12 @@ router.post("/ask", async (req, res) => {
       ${context}
 
       Answer (with citations like [Source 1]):
-      `;
+    `;
 
-    // Save user msg
+    // Save user message in history
     history.push({ role: "user", content: question });
 
+    // Stream Gemini response
     const response = await ai.models.generateContentStream({
       model: "gemini-2.0-flash",
       contents: [prompt],
@@ -91,9 +69,6 @@ router.post("/ask", async (req, res) => {
     let fullAnswer = "";
     for await (const chunk of response) {
       const text = chunk.text;
-
-      console.log(text);
-
       if (text) {
         const linkedText = linkifyCitations(text, results);
         fullAnswer += linkedText;
@@ -104,7 +79,7 @@ router.post("/ask", async (req, res) => {
     res.write("data: [DONE]\n\n");
     res.end();
 
-    // Save assistant msg
+    // Save assistant response
     history.push({ role: "assistant", content: fullAnswer });
     await saveSession(sessionId, history);
   } catch (error) {
@@ -113,16 +88,17 @@ router.post("/ask", async (req, res) => {
   }
 });
 
-// Clear session
-router.post("/clear", async (req, res) => {
-  const { sessionId } = req.body;
+// 🔐 Clear session also requires Clerk auth
+router.post("/clear", requireAuth(), async (req, res) => {
+  const { userId } = getAuth(req);
+  const sessionId = userId;
   if (sessionId) {
     await redisClient.del(sessionId);
   }
   res.json({ success: true });
 });
 
-// Simple test route
+// Test route (public)
 router.get("/", (req, res) => {
   res.json({ message: "Chat API is working 🚀" });
 });
