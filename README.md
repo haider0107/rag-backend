@@ -27,7 +27,7 @@ A powerful Retrieval-Augmented Generation (RAG) backend API that processes RSS n
 
 <!-- TODO: Add demo link here -->
 
-**Live Demo**: Coming Soon...
+**Live Demo**: [![Watch the video](https://img.youtube.com/vi/Bff3ajzOvrE/0.jpg)](https://www.youtube.com/watch?v=Bff3ajzOvrE)
 
 ## 📋 Prerequisites
 
